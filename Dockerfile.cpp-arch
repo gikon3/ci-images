@@ -1,0 +1,89 @@
+# syntax=docker/dockerfile:1
+#
+# Сборочный образ для C++ проектов: clang, gcc, cmake, ninja, conan.
+# Публикуется как ghcr.io/gikon3/cpp-arch, собирается .github/workflows/cpp-arch.yml.
+
+ARG BASE_TAG=base-devel
+FROM archlinux:${BASE_TAG}
+
+ARG ARCH_SNAPSHOT=2026/09/04
+ARG CONAN_VERSION=2.31.2
+
+# clang       - clang, clang++, clang-tidy, clang-format одним пакетом
+# compiler-rt - рантаймы asan/ubsan/tsan
+# llvm        - llvm-symbolizer, без него трейсы санитайзеров нечитаемы
+# git, zstd   - их требуют actions/checkout и actions/cache
+RUN echo 'Server = https://archive.archlinux.org/repos/'"${ARCH_SNAPSHOT}"'/$repo/os/$arch' > /etc/pacman.d/mirrorlist \
+       && pacman -Syyuu --noconfirm --needed clang compiler-rt llvm gcc cmake ninja git zstd python \
+       && pacman -Scc --noconfirm
+
+RUN python -m venv /opt/venv-conan \
+       && /opt/venv-conan/bin/pip install --no-cache-dir --disable-pip-version-check "conan==${CONAN_VERSION}"
+ENV PATH="/opt/venv-conan/bin:${PATH}"
+
+ENV CONAN_HOME=/opt/conan-home
+ENV CPP_ARCH_SNAPSHOT=${ARCH_SNAPSHOT}
+
+RUN <<'SETUP'
+set -eu
+
+clang_major=$(clang++ -dumpversion | cut -d. -f1)
+gcc_major=$(g++ -dumpversion | cut -d. -f1)
+arch=$(uname -m)
+
+mkdir -p "${CONAN_HOME}/profiles"
+
+cat > "${CONAN_HOME}/profiles/clang" <<PROFILE
+[settings]
+os=Linux
+arch=${arch}
+compiler=clang
+compiler.version=${clang_major}
+compiler.libcxx=libstdc++11
+compiler.cppstd=23
+build_type=Release
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+tools.build:compiler_executables={"c": "clang", "cpp": "clang++"}
+PROFILE
+
+cat > "${CONAN_HOME}/profiles/gcc" <<PROFILE
+[settings]
+os=Linux
+arch=${arch}
+compiler=gcc
+compiler.version=${gcc_major}
+compiler.libcxx=libstdc++11
+compiler.cppstd=23
+build_type=Release
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+tools.build:compiler_executables={"c": "gcc", "cpp": "g++"}
+PROFILE
+
+ln -sfn clang "${CONAN_HOME}/profiles/default"
+
+# Паспорт образа: по нему потребитель строит ключ кеша и пишет в лог, чем собрано.
+cat > /etc/cpp-arch-release <<RELEASE
+snapshot=${CPP_ARCH_SNAPSHOT}
+clang=$(clang++ -dumpversion)
+gcc=$(g++ -dumpfullversion)
+cmake=$(cmake --version | head -1 | awk '{print $3}')
+ninja=$(ninja --version)
+conan=$(conan --version | awk '{print $3}')
+RELEASE
+
+chmod -R a+rwX "${CONAN_HOME}"
+SETUP
+
+# Сборка идёт не от root. Uid 1001 - тот же, что у пользователя runner на
+# GitHub-раннерах: рабочее дерево монтируется в /__w с этим владельцем, и при
+# несовпадении actions/checkout упрётся в права.
+RUN useradd --create-home --uid 1001 builder
+USER builder
+WORKDIR /home/builder
+
+LABEL org.opencontainers.image.source="https://github.com/gikon3/ci-images" \
+      org.opencontainers.image.description="Сборочный образ C++ на Arch Linux: clang, gcc, cmake, ninja, conan"
