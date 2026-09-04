@@ -67,6 +67,8 @@ jobs:
             CONAN_VERSION=${{ steps.conan.outputs.version }}
           tags: cpp-arch:candidate
           load: true
+          provenance: false
+          sbom: false
 
       - name: Smoke - тулчейн, санитайзеры, conan
         run: |
@@ -117,6 +119,8 @@ jobs:
             ${{ env.IMAGE }}:${{ steps.snapshot.outputs.tag }}
             ${{ env.IMAGE }}:latest
           push: true
+          provenance: false
+          sbom: false
 
       - name: Убрать осиротевшие версии
         uses: actions/delete-package-versions@v5
