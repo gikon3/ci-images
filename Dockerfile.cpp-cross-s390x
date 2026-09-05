@@ -1,0 +1,71 @@
+# syntax=docker/dockerfile:1
+#
+# Кросс-сборочный образ: компилирует под s390x на x86, результат запускает под qemu.
+# Публикуется как ghcr.io/gikon3/cpp-cross-s390x, собирается
+# .github/workflows/cpp-cross-s390x.yml.
+
+ARG BASE_TAG=trixie-slim
+FROM debian:${BASE_TAG}
+
+ARG CONAN_VERSION=2.32.0
+
+# crossbuild-essential-s390x - s390x-linux-gnu-g++ и кросс-библиотеки
+# qemu-user-static           - запуск s390x-бинарей на x86, binfmt не нужен
+# build-essential            - нативный компилятор для build-контекста Conan
+# git, zstd                  - их требуют actions/checkout и actions/cache
+RUN apt-get -qq update \
+       && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends \
+              build-essential crossbuild-essential-s390x qemu-user-static \
+              cmake ninja-build git zstd python3 python3-venv ca-certificates \
+       && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv-conan \
+       && /opt/venv-conan/bin/pip install --no-cache-dir --disable-pip-version-check "conan==${CONAN_VERSION}"
+ENV PATH="/opt/venv-conan/bin:${PATH}"
+
+ENV CONAN_HOME=/opt/conan-home
+ENV QEMU_LD_PREFIX=/usr/s390x-linux-gnu
+
+RUN <<'SETUP'
+set -eu
+
+host_major=$(s390x-linux-gnu-g++ -dumpversion | cut -d. -f1)
+
+# default - нативный профиль сборочного контекста, s390x - хостовый.
+conan profile detect --force > /dev/null
+
+cat > "${CONAN_HOME}/profiles/s390x" <<PROFILE
+[settings]
+os=Linux
+arch=s390x
+compiler=gcc
+compiler.version=${host_major}
+compiler.libcxx=libstdc++11
+compiler.cppstd=23
+build_type=Release
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+tools.build:compiler_executables={"c": "s390x-linux-gnu-gcc", "cpp": "s390x-linux-gnu-g++"}
+tools.cmake.cmaketoolchain:extra_variables={"CMAKE_CROSSCOMPILING_EMULATOR": "/usr/bin/qemu-s390x-static"}
+PROFILE
+
+cat > /etc/cpp-cross-s390x-release <<RELEASE
+debian=$(cat /etc/debian_version)
+gcc_host=$(s390x-linux-gnu-g++ -dumpfullversion)
+gcc_build=$(g++ -dumpfullversion)
+qemu=$(qemu-s390x-static --version | head -1 | awk '{print $3}')
+cmake=$(cmake --version | head -1 | awk '{print $3}')
+ninja=$(ninja --version)
+conan=$(conan --version | awk '{print $3}')
+RELEASE
+
+chmod -R a+rwX "${CONAN_HOME}"
+SETUP
+
+RUN useradd --create-home --uid 1001 builder
+USER builder
+WORKDIR /home/builder
+
+LABEL org.opencontainers.image.source="https://github.com/gikon3/ci-images" \
+      org.opencontainers.image.description="Кросс-сборочный образ C++ под s390x: gcc, qemu-user, cmake, ninja, conan"

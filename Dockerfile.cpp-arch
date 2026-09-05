@@ -7,7 +7,7 @@ ARG BASE_TAG=base-devel
 FROM archlinux:${BASE_TAG}
 
 ARG ARCH_SNAPSHOT=2026/09/04
-ARG CONAN_VERSION=2.31.2
+ARG CONAN_VERSION=2.32.0
 
 # clang       - clang, clang++, clang-tidy, clang-format одним пакетом
 # compiler-rt - рантаймы asan/ubsan/tsan
